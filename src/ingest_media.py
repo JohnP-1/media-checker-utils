@@ -90,7 +90,16 @@ def check_movie_folder(folder_path: Path) -> tuple[bool, list[Path]]:
 
 
 def ingest_movies():
+    folders_to_create = []
+    files_to_ingest = []
     ingest_items_paths = get_list_folder_paths(folder_path=PATH_INGEST_MOVIES)
+    for folder_path in ingest_items_paths:
+        folder_exists, files_to_ingest_item = check_movie_folder(folder_path)
+        if not folder_exists:
+            folders_to_create.append(folder_path)
+
+        files_to_ingest += files_to_ingest_item
+        # Here you would add the logic to actually ingest the files
 
 
 def main():
