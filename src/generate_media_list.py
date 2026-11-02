@@ -1,18 +1,14 @@
+import argparse
 import os
 from pathlib import Path
-import argparse
-import re
+
 import yaml
 from dotenv import load_dotenv
 
 from helper_functions import (
-    check_tmdbid_in_name,
-    check_year_in_name,
-    get_tmdb_details,
-    check_tmdb_name,
-    check_folder_not_empty,
-    get_list_folders,
     get_list_folder_paths,
+    get_list_folders,
+    get_tmdb_details,
     tmdb_get_collection_details,
 )
 

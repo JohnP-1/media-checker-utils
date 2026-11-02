@@ -1,24 +1,25 @@
-import os
-from pathlib import Path
 import argparse
+import os
 import re
+from pathlib import Path
+
 from dotenv import load_dotenv
 
 from helper_functions import (
+    check_files_match_folder,
+    check_folder_not_empty,
+    check_tmdb_name,
     check_tmdbid_in_name,
     check_year_in_name,
-    get_tmdb_details,
-    check_tmdb_name,
-    check_folder_not_empty,
-    get_list_folders,
     get_list_folder_paths,
+    get_list_folders,
+    get_tmdb_details,
 )
 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
     
-
 
 def check_series_folder_names(folder_path: Path):
     print("Checking SERIES folders now ...\n")
@@ -124,17 +125,6 @@ def check_folder_names(folder_path:Path, API_KEY: str, media_type: str):
     total_errors = len(tmdbid_errors) + len(year_errors) + len(tmdb_response_errors) + len(tmdb_name_errors)
     print(f"\nThe total number of errors found was {total_errors}. Please fix these now.\n")
 
-
-def check_files_match_folder(folder_path: Path, folder: str) -> tuple[str, str]:
-    files = os.listdir(folder_path)
-    files_not_match = []
-
-    for file in files:
-        file_name = Path(file).stem.replace("-dvd1", "").replace("-dvd2", "").replace(" - 576p", "").replace(" - 1080p", "")
-        if file_name != folder:
-            files_not_match.append((folder, file))
-
-    return files_not_match
 
 
 def check_content_movies(folder_path: Path):
