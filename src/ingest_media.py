@@ -89,6 +89,29 @@ def check_movie_folder(folder_path: Path) -> tuple[bool, list[Path]]:
     return folder_exists, file_paths_ingest
 
 
+def convert_to_ingest_paths(ingest_path: Path, folder_path: Path, file_paths: list[Path]) -> tuple[Path, list[Path]]:
+    """Convert a folder path and its file paths to ingestion paths.
+
+    Parameters
+    ----------
+    ingest_path : Path
+        Base path for ingestion.
+    folder_path : Path
+        Original folder path.
+    file_paths : list of Path
+        Original file paths.
+
+    Returns
+    -------
+    tuple of Path and list of Path
+        Ingest folder path and corresponding ingestion file paths.
+    """
+    ingestion_folder_path = ingest_path / folder_path.name
+    ingestion_file_paths = [ingestion_folder_path / file.name for file in file_paths]
+    return ingestion_folder_path, ingestion_file_paths
+
+
+
 def ingest_movies():
     folders_to_create = []
     files_to_ingest = []
@@ -99,7 +122,8 @@ def ingest_movies():
             folders_to_create.append(folder_path)
 
         files_to_ingest += files_to_ingest_item
-        # Here you would add the logic to actually ingest the files
+
+    
 
 
 def main():
