@@ -6,14 +6,14 @@ import shutil
 import signal
 import time
 from pathlib import Path
- 
+
 try:  # not available on Windows (e.g. when running the tests on a dev machine)
     import fcntl
 except ImportError:  # pragma: no cover
     fcntl = None
- 
+
 from dotenv import load_dotenv
- 
+
 from src.helper_functions import (
     check_folder_not_empty,
     check_tmdb_name,
@@ -24,35 +24,38 @@ from src.helper_functions import (
     get_list_folder_paths,
     get_tmdb_details,
 )
- 
+
 logger = logging.getLogger(__name__)
- 
+
 PATH_INGEST_MOVIES = Path("/mnt/storage/ingest/movies/ingest")
 PATH_INGEST_TVSHOWS = Path("/mnt/storage/ingest/tvshows/ingest")
- 
+
 PATH_MEDIA_MOVIES = Path("/mnt/storage/files/media/movies")
 PATH_MEDIA_TVSHOWS = Path("/mnt/storage/files/media/tvshows")
- 
+
 # Must NOT be inside the ingest folder, or it would be picked up as an ingest item.
 PATH_FAILED_MOVIES = Path("/mnt/storage/ingest/movies/failed")
- 
+
 PATH_LOG_FILE = Path("/mnt/storage/ingest/ingest.log")
 PATH_LOCK_FILE = Path("/mnt/storage/ingest/ingest.lock")
- 
+
 DEFAULT_INTERVAL_SECONDS = 15 * 60
 DEFAULT_SETTLE_SECONDS = 5 * 60
- 
+
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
 
 
-def setup_logging(log_file: Path = PATH_LOG_FILE, level: int = logging.INFO) -> list[logging.Handler]:
-    """Log to both the console and a file on disk (appending across runs)."""
+def setup_logging(log_file: Path | None = None, level: int = logging.INFO) -> list[logging.Handler]:
+    """Log to the console (``docker logs``) and to a rotating file on disk."""
+    log_file = log_file or PATH_LOG_FILE
     log_file.parent.mkdir(parents=True, exist_ok=True)
     formatter = logging.Formatter("%(asctime)s %(levelname)-8s %(name)s: %(message)s")
 
-    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+    )
     console_handler = logging.StreamHandler()
     handlers = [file_handler, console_handler]
 
@@ -187,9 +190,39 @@ def remove_empty_folders(folders: list[Path]) -> None:
             logger.warning(f"Folder not empty, leaving in place: {folder}")
 
 
-def ingest_movies():
-    folders = get_list_folder_paths(folder_path=PATH_INGEST_MOVIES)
+def folder_is_settled(folder: Path, min_age_seconds: float, now: float | None = None) -> bool:
+    """True if nothing in ``folder`` (or the folder itself) changed recently.
 
+    Guards against picking up a folder that is still being copied or downloaded.
+    Uses the later of mtime and ctime, since a copy can preserve the source's old
+    mtime but cannot fake ctime.
+    """
+    if min_age_seconds <= 0:
+        return True
+    now = time.time() if now is None else now
+    newest = 0.0
+    for path in [folder, *folder.rglob("*")]:
+        try:
+            st = path.stat()
+        except FileNotFoundError:  # vanished while scanning
+            continue
+        newest = max(newest, st.st_mtime, st.st_ctime)
+    return now - newest >= min_age_seconds
+
+
+def ingest_movies(settle_seconds: float = 0) -> None:
+    folders = []
+    for folder in get_list_folder_paths(folder_path=PATH_INGEST_MOVIES):
+        if folder_is_settled(folder, settle_seconds):
+            folders.append(folder)
+        else:
+            logger.info(f"Deferring (changed within the last {settle_seconds:g}s, may still be copying): {folder.name}")
+    if not folders:
+        logger.debug("Nothing to ingest")
+        return
+
+    # Phase 1: validate everything. Nothing is moved until every check has finished,
+    # so an error here (e.g. TMDB unreachable) aborts the run with no files touched.
     valid_files: list[Path] = []
     failed_files: list[Path] = []
     for folder in folders:
@@ -197,11 +230,15 @@ def ingest_movies():
         valid_files += valid
         failed_files += failed
 
+    # Phase 2: move valid files into the library; anything that can't go (e.g. it
+    # already exists there) is quarantined instead.
     skipped = move_files(convert_to_ingest_paths(PATH_MEDIA_MOVIES, valid_files))
     failed_files += [original for _, original in skipped]
 
+    # Phase 3: quarantine failures, keeping their parent folder name.
     still_stuck = move_files(convert_to_ingest_paths(PATH_FAILED_MOVIES, failed_files))
 
+    # Phase 4: tidy up.
     remove_empty_folders(folders)
 
     logger.info(
@@ -227,11 +264,11 @@ def run_locked(job, lock_file: Path | None = None) -> bool:
             return False
         job()
         return True
- 
- 
+
+
 def run_forever(job, interval, *, clock=time.monotonic, sleep=time.sleep, max_cycles=None) -> None:
     """Call ``job`` every ``interval`` seconds, never overlapping itself.
- 
+
     If a run takes longer than the interval, the scheduled runs it overran are
     skipped and the next one starts at the following interval boundary. A failing
     run is logged and retried at the next interval.
@@ -246,7 +283,7 @@ def run_forever(job, interval, *, clock=time.monotonic, sleep=time.sleep, max_cy
         cycles += 1
         if max_cycles is not None and cycles >= max_cycles:
             break
- 
+
         next_run += interval
         now = clock()
         if now >= next_run:
@@ -254,15 +291,15 @@ def run_forever(job, interval, *, clock=time.monotonic, sleep=time.sleep, max_cy
             logger.warning(f"Run overran the {interval}s interval; skipping {missed} scheduled run(s)")
             next_run += missed * interval
         sleep(max(0.0, next_run - clock()))
- 
- 
+
+
 def install_signal_handlers() -> None:
     """Turn SIGTERM (``docker stop``) into SystemExit so in-flight copies clean up."""
     def handler(signum, frame):
         raise SystemExit(128 + signum)
     signal.signal(signal.SIGTERM, handler)
- 
- 
+
+
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ingest movies from the ingest folder into the media library.")
     parser.add_argument("--loop", action="store_true", help="run forever instead of once")
@@ -271,18 +308,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument("--settle", type=int, default=DEFAULT_SETTLE_SECONDS,
                         help="ignore folders changed within this many seconds (default: 300)")
     return parser.parse_args(argv)
- 
- 
+
+
 def main(argv=None):
     args = parse_args(argv)
     setup_logging()
     if not API_KEY:
         logger.error("API_KEY is not set (check your .env / environment)")
         raise SystemExit(1)
- 
+
     def job():
         run_locked(lambda: ingest_movies(settle_seconds=args.settle))
- 
+
     install_signal_handlers()
     logger.info(f"Starting ingest ({'every %ds' % args.interval if args.loop else 'single run'}, settle {args.settle}s)")
     if args.loop:
@@ -293,7 +330,7 @@ def main(argv=None):
         except Exception:
             logger.exception("Ingest aborted")
             raise
- 
- 
+
+
 if __name__ == "__main__":
     main()
