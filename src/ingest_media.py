@@ -1,10 +1,19 @@
+import argparse
 import logging
+import logging.handlers
 import os
 import shutil
+import signal
+import time
 from pathlib import Path
-
+ 
+try:  # not available on Windows (e.g. when running the tests on a dev machine)
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
+ 
 from dotenv import load_dotenv
-
+ 
 from src.helper_functions import (
     check_folder_not_empty,
     check_tmdb_name,
@@ -15,20 +24,24 @@ from src.helper_functions import (
     get_list_folder_paths,
     get_tmdb_details,
 )
-
+ 
 logger = logging.getLogger(__name__)
-
+ 
 PATH_INGEST_MOVIES = Path("/mnt/storage/ingest/movies/ingest")
 PATH_INGEST_TVSHOWS = Path("/mnt/storage/ingest/tvshows/ingest")
-
+ 
 PATH_MEDIA_MOVIES = Path("/mnt/storage/files/media/movies")
 PATH_MEDIA_TVSHOWS = Path("/mnt/storage/files/media/tvshows")
-
+ 
 # Must NOT be inside the ingest folder, or it would be picked up as an ingest item.
 PATH_FAILED_MOVIES = Path("/mnt/storage/ingest/movies/failed")
-
+ 
 PATH_LOG_FILE = Path("/mnt/storage/ingest/ingest.log")
-
+PATH_LOCK_FILE = Path("/mnt/storage/ingest/ingest.lock")
+ 
+DEFAULT_INTERVAL_SECONDS = 15 * 60
+DEFAULT_SETTLE_SECONDS = 5 * 60
+ 
 load_dotenv()
 API_KEY = os.getenv("API_KEY")
 AUTH_TOKEN = os.getenv("AUTH_TOKEN")
@@ -198,15 +211,89 @@ def ingest_movies():
     )
 
 
-def main():
+def run_locked(job, lock_file: Path | None = None) -> bool:
+    """Run ``job`` unless another ingest holds the lock. Returns whether it ran."""
+    if fcntl is None:  # pragma: no cover
+        logger.warning("fcntl unavailable: running without a lock")
+        job()
+        return True
+    lock_file = lock_file or PATH_LOCK_FILE
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock_file, "a") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logger.warning("Previous ingest is still running; skipping this run")
+            return False
+        job()
+        return True
+ 
+ 
+def run_forever(job, interval, *, clock=time.monotonic, sleep=time.sleep, max_cycles=None) -> None:
+    """Call ``job`` every ``interval`` seconds, never overlapping itself.
+ 
+    If a run takes longer than the interval, the scheduled runs it overran are
+    skipped and the next one starts at the following interval boundary. A failing
+    run is logged and retried at the next interval.
+    """
+    next_run = clock()
+    cycles = 0
+    while max_cycles is None or cycles < max_cycles:
+        try:
+            job()
+        except Exception:
+            logger.exception("Ingest run failed; will retry at the next interval")
+        cycles += 1
+        if max_cycles is not None and cycles >= max_cycles:
+            break
+ 
+        next_run += interval
+        now = clock()
+        if now >= next_run:
+            missed = int((now - next_run) // interval) + 1
+            logger.warning(f"Run overran the {interval}s interval; skipping {missed} scheduled run(s)")
+            next_run += missed * interval
+        sleep(max(0.0, next_run - clock()))
+ 
+ 
+def install_signal_handlers() -> None:
+    """Turn SIGTERM (``docker stop``) into SystemExit so in-flight copies clean up."""
+    def handler(signum, frame):
+        raise SystemExit(128 + signum)
+    signal.signal(signal.SIGTERM, handler)
+ 
+ 
+def parse_args(argv=None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Ingest movies from the ingest folder into the media library.")
+    parser.add_argument("--loop", action="store_true", help="run forever instead of once")
+    parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS,
+                        help="seconds between runs in --loop mode (default: 900)")
+    parser.add_argument("--settle", type=int, default=DEFAULT_SETTLE_SECONDS,
+                        help="ignore folders changed within this many seconds (default: 300)")
+    return parser.parse_args(argv)
+ 
+ 
+def main(argv=None):
+    args = parse_args(argv)
     setup_logging()
-    try:
-        ingest_movies()
-        # ingest tv shows
-    except Exception:
-        logger.exception("Ingest aborted")
-        raise
-
-
+    if not API_KEY:
+        logger.error("API_KEY is not set (check your .env / environment)")
+        raise SystemExit(1)
+ 
+    def job():
+        run_locked(lambda: ingest_movies(settle_seconds=args.settle))
+ 
+    install_signal_handlers()
+    logger.info(f"Starting ingest ({'every %ds' % args.interval if args.loop else 'single run'}, settle {args.settle}s)")
+    if args.loop:
+        run_forever(job, args.interval)
+    else:
+        try:
+            job()
+        except Exception:
+            logger.exception("Ingest aborted")
+            raise
+ 
+ 
 if __name__ == "__main__":
     main()
