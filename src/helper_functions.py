@@ -136,42 +136,15 @@ def check_tmdbid_in_name(check_path: Path) -> bool:
     return bool(re.search(r"\[tmdbid-\d+\]", str(check_path.name)))
 
 
-def check_tmdb_name(name: Path, tmdb_response, media_type: str) -> bool:
-    """Compare a media name with the title in a TMDB response.
+def check_tmdb_name(name: Path, tmdb_response: dict, media_type: str) -> tuple[str, bool]:
+    title_keys = {"movies": "title", "tv_shows": "name"}
+    if media_type not in title_keys:
+        raise ValueError(f"Unsupported media_type: {media_type!r}")
 
-    Normalize the media name and compare it with the response title. Select
-    ``"title"`` for movies and ``"name"`` for TV shows.
+    tmdb_title = tmdb_response[title_keys[media_type]]
+    local_title = PATTERN.sub("", name.name)
 
-    Parameters
-    ----------
-    name : Path
-        Media path whose name to compare.
-    tmdb_response : dict
-        TMDB response containing the title for the selected media type.
-    media_type : str
-        Media type to check: ``"movies"`` or ``"tv_shows"``.
-
-    Returns
-    -------
-    tuple
-        TMDB title and a boolean indicating whether the names match.
-    """
-    if media_type == "movies":
-        title_key = "title"
-    elif media_type == "tv_shows":
-        title_key = "name"
-
-    normalized_name = PATTERN.sub("", name.stem)
-    for symbol in NORMALISE_SYMBOLS:
-        normalized_name = normalized_name.replace(symbol, "")
-
-    normalized_tmdb_name = name
-    for symbol in NORMALISE_SYMBOLS:
-        normalized_tmdb_name = normalized_tmdb_name.replace(symbol, "")
-
-    if normalized_tmdb_name in normalized_name:
-        return tmdb_response[title_key], True
-    return tmdb_response[title_key], False
+    return tmdb_title, _normalise(local_title) == _normalise(tmdb_title)
 
 
 def check_year_in_name(check_path: Path) -> bool:
@@ -241,62 +214,23 @@ def get_list_folder_paths(folder_path: Path):
 
 
 def get_tmdbid(name: Path) -> int | None:
-    """Extract a numeric TMDB ID from a path's name.
-
-    Look for a marker such as ``[tmdbid-123]`` in the final path component.
-
-    Parameters
-    ----------
-    name : Path
-        Path whose name to inspect.
-
-    Returns
-    -------
-    int or None
-        Extracted TMDB ID, or ``None`` if the name has no TMDB ID marker.
-    """
-    if "tmdbid" in name.name:
-        match = re.search(r"\[([^\]]*)\]", name.name)
-        return int(match.group(1).replace("tmdbid-", ""))
+    match = re.search(r"\[tmdbid-(\d+)\]", name.name)
+    return int(match.group(1)) if match else None
 
 
 
-def get_tmdb_details(name: Path, API_KEY: str, media_type: str):
-    """Fetch TMDB details for a movie or TV show.
-
-    Extract the TMDB ID from ``name`` and request the corresponding API
-    resource when an ID is present.
-
-    Parameters
-    ----------
-    name : Path
-        Media path whose name contains a TMDB ID marker.
-    API_KEY : str
-        API key used to authenticate the TMDB request.
-    media_type : str
-        Media type to request: ``"movies"`` or ``"tv_shows"``.
-
-    Returns
-    -------
-    dict or None
-        TMDB response data, or ``None`` if ``name`` has no TMDB ID marker.
-    """
-    tmdbid = get_tmdbid(name=name)
-
-    if media_type == "movies":
-        tmdb_media_type = "movie"
-    elif media_type == "tv_shows":
-        tmdb_media_type = "tv"
-
-    if tmdbid is not None:
-        BASE_URL = f"https://api.themoviedb.org/3/{tmdb_media_type}/{tmdbid}"
-        endpoint = f"{BASE_URL}?api_key={API_KEY}"
-
-        r = requests.get(endpoint)
-        data = r.json()
-        return data
-    else:
+def get_tmdb_details(name: Path, API_KEY: str, media_type: str) -> dict | None:
+    tmdbid = get_tmdbid(name)
+    if tmdbid is None:
         return None
+    kind = {"movies": "movie", "tv_shows": "tv"}[media_type]
+    endpoint = f"https://api.themoviedb.org/3/{kind}/{tmdbid}?api_key={API_KEY}"
+    r = requests.get(endpoint)
+    return r.json()
+
+
+def _normalise(text: str) -> str:
+    return re.sub(r"[\W_]", "", text.casefold())
 
 
 def title_only(p: Path) -> str:
