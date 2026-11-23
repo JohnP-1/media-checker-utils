@@ -1,6 +1,6 @@
 services:
   media-ingest:
-    build: .
+    image: ghcr.io/johnp-1/media-checker-utils:latest
     container_name: media-ingest
     restart: unless-stopped
     # Must be a user that can read/write the ingest, failed and library folders.
