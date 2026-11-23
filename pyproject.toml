@@ -7,9 +7,15 @@ requires-python = ">=3.14"
 dependencies = [
     "dotenv>=0.9.9",
     "pytest>=9.2.0",
+    "python-dotenv>=1.2.2",
     "pyyaml>=6.0.3",
     "requests>=2.34.2",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+]
