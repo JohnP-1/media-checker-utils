@@ -1,17 +1,13 @@
 """Test the media ingestion functionality."""
 
-from pathlib import Path
-
-import pytest
-
-from src import ingest_media
-
 import logging
+from pathlib import Path
 
 import pytest
 import requests
 
 import src.ingest_media as ingest
+from src import ingest_media
 from tests.conftest import make_movie
 
 GATTACA = "Gattaca (1997) [tmdbid-782]"
@@ -20,32 +16,35 @@ ALIEN = "Alien (1979) [tmdbid-348]"
 MOVIES_INPUTS = Path(__file__).parent / "tests_inputs" / "movies"
 
 
+def fail_if_called(**kwargs):
+    pytest.fail("TMDB lookup should not run for an invalid folder")
+
+
 @pytest.mark.parametrize(
-    "folder_name, expect_failed_files",
+    "folder_name",
     [
-        ("empty movie folder (1999) [tmdbid-1234]", False),
-        ("title (200) [tmdbid-1234]", True),
-        ("title (2000) [tmdid-1234]", True),
+        "title (200) [tmdbid-1234]",
+        "title (2000) [tmdid-1234]",
     ],
 )
-def test_check_folder_rejects_empty_or_invalid_folder_names(
-    monkeypatch, folder_name, expect_failed_files
-):
+def test_check_folder_rejects_invalid_folder_names(monkeypatch, folder_name):
     folder_path = MOVIES_INPUTS / folder_name
-
-    def fail_if_called(**kwargs):
-        pytest.fail("TMDB lookup should not run for an invalid folder")
-
     monkeypatch.setattr(ingest_media, "get_tmdb_details", fail_if_called)
 
     valid_files, failed_files = ingest_media.check_movie_folder(folder_path)
+
     assert valid_files == []
-    if expect_failed_files:
-        assert set(failed_files) == {
-            path for path in folder_path.iterdir() if path.is_file()
-        }
-    else:
-        assert failed_files == []
+    assert set(failed_files) == {
+        path for path in folder_path.iterdir() if path.is_file()
+    }
+
+
+def test_check_folder_empty_folder_has_nothing_to_ingest(monkeypatch, tmp_path):
+    folder_path = tmp_path / "empty movie folder (1999) [tmdbid-1234]"
+    folder_path.mkdir()
+    monkeypatch.setattr(ingest_media, "get_tmdb_details", fail_if_called)
+
+    assert ingest_media.check_movie_folder(folder_path) == ([], [])
 
 
 def test_check_folder_returns_only_valid_matching_movie_files(monkeypatch):

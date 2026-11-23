@@ -22,9 +22,10 @@ def movie_folder_path():
 
 
 @pytest.fixture
-def empty_movie_folder_path():
-    return Path("tests/tests_inputs/movies/empty movie folder (1999) [tmdbid-1234]")
-
+def empty_movie_folder_path(tmp_path):
+    path = tmp_path / "empty movie folder (1999) [tmdbid-1234]"
+    path.mkdir()
+    return path
 
 def test_check_files_match_folder(movie_folder_path):
 
